@@ -1,0 +1,809 @@
+{
+  "name": "Papaya Compliance Governance Gate - Native Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "event": "pagedUpdatedInDatabase",
+        "databaseId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "SET_DATABASE_ID_AT_IMPORT"
+        },
+        "simple": false
+      },
+      "id": "340dbefa-c5dc-4e44-9315-2680ce6f98eb",
+      "name": "Notion Trigger - Page Updated in Content DB",
+      "type": "n8n-nodes-base.notionTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Polls the content-calendar DB for updated pages. For the live demo, click 'fetch test event' to pull the latest updated page instantly. Production swaps this for Notion's native automation -> n8n Webhook (zero latency). Set the databaseId + Notion credential at import. simple=false so the raw page object (properties.Status...) is what the guardrail reads."
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $input.first().json;\n// Raw Notion page object: id + properties. Status may be a 'status'- or 'select'-type property.\nconst props = p.properties || {};\nconst statusProp = props.Status || props.status || {};\nconst status = (statusProp.status && statusProp.status.name) || (statusProp.select && statusProp.select.name) || '';\nconst titleArr = (props.Name && props.Name.title) || (props.Title && props.Title.title) || [];\nconst page_title = titleArr.map(t => t.plain_text).join('') || '(untitled)';\nconst page_id = p.id;\n// Only compliance-review states proceed. Anything else is a no-op skip (not an error).\nconst reviewable = (status === 'Draft' || status === 'In Review');\nreturn [{ json: { page_id, page_title, status, _skip: !reviewable, skip_reason: reviewable ? '' : 'status_not_reviewable' } }];"
+      },
+      "id": "b4ec89b5-d38e-45b6-960f-d549f1d7439d",
+      "name": "Guardrail - Entry Conditions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -176,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Deterministic. Fires on any page update; proceeds only when Status is Draft/In Review. Extracts page_id/title/status from the raw Notion page and flags _skip for anything else."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "73d54a60-2fe6-437f-bdee-e6be8be96df0",
+              "leftValue": "={{ $json._skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "aa62ee24-973d-4ca4-873b-2c50832fa237",
+      "name": "Only Draft / In Review",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        48,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Deterministic no-op skip: drops any page whose Status is not Draft/In Review so the gate never touches a page it wasn't asked to review, and never spends a model call on one."
+    },
+    {
+      "parameters": {
+        "resource": "block",
+        "operation": "getAll",
+        "blockId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.page_id }}"
+        },
+        "returnAll": true
+      },
+      "id": "82a59c1d-aa5c-4d9c-80b0-b7f899d36333",
+      "name": "Get Draft Body (Notion)",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        272,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Pulls the page's block children (the actual draft text). Same Notion credential as the trigger."
+    },
+    {
+      "parameters": {
+        "jsCode": "const CONTEXT_LAYER = \"# Papaya Global \\u2014 Context Source (Ground Truth Layer)\\n\\n> Purpose: verified factual context for a marketing content agent. Every fact below was checked on 2026-07-06 against papayaglobal.com (live crawl) or a reputable named source. If a claim is not in this file, do not assert it \\u2014 flag it for verification instead.\\n\\n```yaml\\nmeta:\\n  compiled: 2026-07-06\\n  primary_sources:\\n    - https://www.papayaglobal.com/llms.txt   # Papaya's own AI-facing fact sheet \\u2014 canonical for product claims\\n    - https://www.papayaglobal.com/ (homepage, live crawl)\\n    - https://www.papayaglobal.com/pricing/ (live crawl)\\n    - press releases via PR Newswire / Business Wire (linked per fact)\\n\\ncompany_facts:\\n  legal_name: Papaya Global\\n  founded: 2016\\n  founders:\\n    - Eynat Guez (CEO, co-founder)\\n    - Ruben Drong (CPO, co-founder)\\n    - Ofer Herman (CTO, co-founder)\\n  hq: Tel Aviv, Israel + New York (dual base; offices incl. Austin, London, Melbourne)\\n  valuation: \\\"$3.7B (Series D, September 2021 \\u2014 has NOT been publicly re-marked since; always date-stamp this figure)\\\"\\n  total_funding: \\\"~$440M as of Series D close\\\"\\n  series_d: \\\"$250M, Sept 2021, led by Insight Partners with Tiger Global; existing investors incl. Greenoaks, IVP, Scale Venture Partners, Bessemer, Alkeon, Workday Ventures, Access Industries, Group 11\\\"\\n  source:\\n    - https://www.businesswire.com/news/home/20210913005227/en/  # Series D / valuation / founders\\n    - https://en.wikipedia.org/wiki/Papaya_Global\\n\\nproducts:\\n  # Descriptions below use Papaya's own words from llms.txt / product pages.\\n  workforce_os:\\n    name: \\\"Workforce OS\\\"\\n    what: \\\"The core employment and payroll platform. Native payroll in 120+ countries, operated by local payroll experts on the ground, with direct legal entity presence in 100+ countries \\u2014 'no third-party aggregators between Papaya and the payroll output.' Full payroll and compliance coverage across 180 countries. Includes EOR, Compliance, Time & Attendance, HR data of record, OneData Connectors, Analytics & JE automation, agentic payroll, and employee self-service.\\\"\\n    key_pages:\\n      - https://www.papayaglobal.com/platform/\\n      - https://www.papayaglobal.com/global-payroll/\\n      - https://www.papayaglobal.com/employer-of-record/\\n    eor_specifics: \\\"Hire in 180 countries without a local entity; Papaya assumes 100% employment and statutory liability as legal employer of record. Contractual financial termination guarantee: capped legal defense $25K (Tier 1) / $50K (Tier 2), capped exposure beyond statutory liability of one month base across 22 covered countries.\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  contingent_os:\\n    name: \\\"Contingent OS\\\"\\n    what: \\\"Contractor and contingent workforce management: AOR, contractor engagement and compliance, misclassification protection (Papaya assumes the misclassification risk), VMS connectors (SAP Fieldglass, Beeline, Coupa, Workday Contingent Workforce), contractor payment automation, classification agent, unified employee + contractor view, 130 payout currencies. Full lifecycle 'from compliant classification and onboarding through invoice approval to same-day payment.'\\\"\\n    key_pages:\\n      - https://www.papayaglobal.com/contingent-workforce-os/\\n      - https://www.papayaglobal.com/contractor-management/\\n      - https://www.papayaglobal.com/contractor-classification/\\n    source: https://www.papayaglobal.com/llms.txt\\n  payments_os:\\n    name: \\\"Payments OS\\\"\\n    what: \\\"Regulated global payment infrastructure for workforce payments \\u2014 'not a payment processor bolted onto payroll \\u2014 a licensed institution with full financial liability.' Cross-border payments in 180 countries, 130 payout currencies, Tier 1 banking rails (J.P. Morgan, Citi), 99.5% delivery rate, 90% real-time settlement, Payment of Record (POR), payments liability coverage, Banco employee wallet, on-demand pay, segregated protected funds. Papaya's payments arm is Azimo, licensed across Tier-1 jurisdictions.\\\"\\n    key_pages:\\n      - https://www.papayaglobal.com/payments/\\n      - https://www.papayaglobal.com/payment-api/\\n      - https://www.papayaglobal.com/banco-worker-wallet/\\n    source: https://www.papayaglobal.com/llms.txt\\n  papaya_one:\\n    name: \\\"One (Papaya One) \\u2014 Compliance Intelligence Engine\\\"\\n    what: \\\"'The Agentic Knowledge Base for Global Compliance.' Employment law, worker classification, and contract review across 95+ jurisdictions and 50 US states. Clause-by-clause statutory checklists in 18 countries (incl. Germany, UK, France, US, Brazil, Spain, India, Singapore); universal framework elsewhere. Average contract review under ~30 seconds. Findings structured as Must Fix / Verify / Compliant with article-level statutory citations. Standalone at one.papayaglobal.com. Launched June 2026.\\\"\\n    key_pages:\\n      - https://www.papayaglobal.com/papaya-one/\\n    launch_pr: https://www.prnewswire.com/news-releases/papaya-global-launches-one-an-agentic-compliance-intelligence-platform-tailored-to-each-organization-302807523.html\\n    source: https://www.papayaglobal.com/llms.txt\\n  onedata:\\n    name: \\\"OneData \\u2014 Intelligence & Integration Layer\\\"\\n    what: \\\"'AI-powered intelligence layer that maps any HCM, ERP, or VMS into a single data fabric.' 150+ pre-built connectors (SAP SuccessFactors, Workday, Oracle, ADP, BambooHR, NetSuite, Microsoft Dynamics, Rippling, Personio, HiBob\\u2026). JE automation to any ERP/GL. Claim on homepage: 'Go live in weeks. 100% accuracy from first cycle.'\\\"\\n    key_pages:\\n      - https://www.papayaglobal.com/onedata/\\n      - https://www.papayaglobal.com/connectors/\\n    source: https://www.papayaglobal.com/llms.txt + homepage crawl\\n\\npositioning:\\n  master_tagline: \\\"Workforce Mastered\\\"          # og:title on homepage\\n  device: \\\"'[X]. Mastered.' headline pattern \\u2014 Global Workforce. Mastered. / Contingent Workforce. Mastered. / Workforce Payments. Mastered.\\\"\\n  secondary_tagline: \\\"How the World Gets Paid\\\"   # llms.txt lead line\\n  approved_phrases:   # verbatim from site \\u2014 safe to reuse\\n    - \\\"We own the liability. Your risk is our responsibility.\\\"\\n    - \\\"AI handles the data. Humans handle the decisions.\\\"\\n    - \\\"Three orchestration systems. One data fabric. One truth.\\\"\\n    - \\\"One language for your entire workforce.\\\"\\n    - \\\"Generic AI can describe employment law. It can't audit a contract.\\\"\\n    - \\\"Compliance discipline, not improvisation.\\\"\\n    - \\\"Not a payment processor bolted onto payroll \\u2014 a licensed institution with full financial liability.\\\"\\n    - \\\"Power up your payroll & payments\\\"          # site-wide CTA\\n    - \\\"Ready to master your workforce?\\\"\\n  ceo_framing: \\\"Eynat Guez: 'Currently evolving from human-led to agent-automated' (LinkedIn headline); 'AI is changing the speed of compliance work, but it cannot change who owns the outcome' (Papaya One launch PR).\\\"\\n  source:\\n    - https://www.papayaglobal.com/ (homepage crawl)\\n    - https://www.papayaglobal.com/papaya-one/\\n    - https://www.linkedin.com/in/eynatguez/\\n\\nicp_personas:\\n  primary: \\\"Enterprise CHRO / CFO / CPO and global payroll, payments & contingent-workforce leaders at multi-entity, multi-country companies. Homepage: 'The numbers that matter to your CHRO. CTO. CEO.'\\\"\\n  scale_markers: \\\"35% of clients are Fortune 500; 50%+ of clients manage 2,500+ workers (per llms.txt)\\\"\\n  verticals_targeted: \\\"BPO, staffing firms & MSPs, freelancer marketplaces, iGaming, maritime, oil & gas, multinational companies, payroll processors & accounting firms (per /industry/ pages)\\\"\\n  named_customers: \\\"Hitachi, Shell, Canva, CyberArk, Supercell, Omnicom, Under Armour, General Dynamics, Toyota, FIFA, Shopify, ASOS, Lipton Teas (per llms.txt); case studies: Cato Networks, Lipton, SentinelOne, South Pole, Tricon Energy\\\"\\n  source: https://www.papayaglobal.com/llms.txt + site crawl\\n\\nproof_points:   # all from Papaya's own llms.txt / site \\u2014 cite as \\\"per Papaya\\\" claims, not independently audited\\n  - claim: \\\"2,000+ global clients; 35% Fortune 500; 99% client retention\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  - claim: \\\"$50B+ processed annually across 180 countries\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  - claim: \\\"Native payroll in 120+ countries; direct legal entities in 100+ countries; compliance coverage across 180 countries\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  - claim: \\\"99.5% payment delivery rate; 90% settled in real time (vs ~85% on traditional SWIFT)\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  - claim: \\\"Certifications: SOC 1 Type 2, SOC 2 Type 2, ISO 27001, ISO 27701, GDPR\\\"\\n    source: https://www.papayaglobal.com/llms.txt (+ /security-and-privacy/)\\n  - claim: \\\"Tier 1 banking partnerships: J.P. Morgan and Citi; regulated payments arm Azimo licensed in Tier-1 jurisdictions\\\"\\n    source: https://www.papayaglobal.com/llms.txt\\n  - claim: \\\"Papaya One: 95+ jurisdictions + 50 US states; ~30s average contract review; 18 deep-checklist countries\\\"\\n    source: https://www.papayaglobal.com/papaya-one/ + homepage stats block\\n  - claim: \\\"US: 99.9% tax filing accuracy; 95% of US payments same day; 10,000+ tax jurisdictions navigated\\\"\\n    source: https://www.papayaglobal.com/llms.txt (usa-workforce section)\\n  - claim: \\\"Public pricing (starting from): EOR $499/employee/mo; COR $295/contractor/mo; Contractor solution $5/contractor/mo; Payroll Plus $29/employee/mo; Payments OS $3.5/transaction\\\"\\n    source: https://www.papayaglobal.com/pricing/ (verified on-page 2026-07-06)\\n  - claim: \\\"FXC Intelligence 2026 Cross-Border Payments 100 honoree\\\"\\n    source: https://www.papayaglobal.com/blog/papaya-global-fxc-intelligence-2026-cross-border-payments-100/\\n\\npartnerships_and_news:\\n  - item: \\\"Fireblocks partnership \\u2014 Banco Wallet, stablecoin-enabled global workforce wallet (fiat + stablecoin payouts, 180+ countries; embedded wallets by Dynamic; multi-currency, family payouts, yield options)\\\"\\n    date: 2026-01-28\\n    source: https://www.prnewswire.com/news-releases/papaya-global-launches-global-workforce-wallet-powered-by-fireblocks-302672562.html\\n  - item: \\\"Papaya One agentic compliance intelligence platform launch\\\"\\n    date: 2026-06\\n    source: https://www.prnewswire.com/news-releases/papaya-global-launches-one-an-agentic-compliance-intelligence-platform-tailored-to-each-organization-302807523.html\\n  - item: \\\"Tech Mahindra strategic alliance \\u2014 global workforce operations & payments modernization\\\"\\n    date: 2026-04\\n    source: https://www.prnewswire.com/news-releases/papaya-global-and-tech-mahindra-announce-strategic-alliance-to-modernize-global-workforce-operations-and-payments-302739903.html\\n  - item: \\\"Papaya Payments Academy \\u2014 free on-demand workforce-payments training hub (6\\u20138 min masterclasses, certifications)\\\"\\n    source: https://www.prnewswire.com/news-releases/papaya-global-launches-papaya-payments-academy-the-first-free-on-demand-training-hub-specifically-for-workforce-payments-302507191.html\\n\\ncompetitors:\\n  direct: [Deel, Remote, Rippling (global), Oyster, Multiplier, Velocity Global, G-P (Globalization Partners)]\\n  enterprise_payroll: [ADP GlobalView/Celergo, Workday Payroll (partner AND competitor context), CloudPay, Safeguard Global]\\n  papaya_differentiation_claims: \\\"Only global payroll/workforce platform owning licensed payments infrastructure (Azimo); full statutory + financial liability ownership ('No aggregator or marketplace EOR model offers this' \\u2014 per llms.txt); enterprise depth vs SMB-first competitors\\\"\\n  note: \\\"Papaya runs /competitor-comparison on-site; do NOT invent head-to-head feature claims \\u2014 use only claims on that page or llms.txt.\\\"\\n\\nbanned_claims:   # do NOT write these\\n  - \\\"Any valuation other than '$3.7B as of Sept 2021 Series D' \\u2014 no newer public mark exists.\\\"\\n  - \\\"Papaya is 'green' branded \\u2014 FALSE. Current brand is red-coral #FF3924 on dark navy #081523 (post-rebrand). No green in the palette.\\\"\\n  - \\\"Specific revenue, ARR, or profitability figures \\u2014 none publicly verified.\\\"\\n  - \\\"Employee headcount figures \\u2014 not verified in this crawl; do not state.\\\"\\n  - \\\"'AI-first OS for a borderless workforce' as an official on-site tagline \\u2014 it summarizes their positioning but the verbatim site language is 'Workforce Mastered' / 'How the World Gets Paid'. Prefer verbatim phrases.\\\"\\n  - \\\"Claims that Papaya offers crypto payroll broadly \\u2014 the verified claim is the Banco Wallet supports fiat AND stablecoin payouts (Fireblocks, Jan 2026). Don't extrapolate to 'pay in Bitcoin' etc.\\\"\\n  - \\\"Customer counts beyond '2,000+ clients' or logos beyond the named list above.\\\"\\n  - \\\"Uncapped liability promises \\u2014 EOR termination guarantee is capped ($25K/$50K legal defense tiers, one month base beyond statutory, 22 countries). Never say 'unlimited liability coverage.'\\\"\\n  - \\\"'Fastest/cheapest' superlatives without Papaya's own qualifier (their claim is 'average go-live in weeks \\u2014 the fastest in the industry' \\u2014 attribute it to Papaya, don't state as independent fact).\\\"\\n\\ntone_rules:\\n  - \\\"Bold, declarative, enterprise-confident. Short sentences. Fragments allowed ('Mastered.').\\\"\\n  - \\\"Numbers-forward: lead with verifiable stats (180 countries, 99.5% delivery, ~30s review).\\\"\\n  - \\\"Speak to risk owners (CHRO/CFO/CEO/GC), not junior HR practitioners.\\\"\\n  - \\\"AI stance: pro-AI but accountability-first. AI = foundation/infrastructure, humans own decisions and liability. Never hype AI as replacing human accountability.\\\"\\n  - \\\"It's acceptable to name foils: generic AI chatbots, SWIFT-era banking rails, aggregator/marketplace EOR models.\\\"\\n  - \\\"Never cutesy or startup-casual; no emoji in brand copy.\\\"\\n  - \\\"Liability ownership is the spine of every argument: 'we own it' beats 'we enable it'.\\\"\\n\\nbrand_visual:   # extracted from live CSS custom properties, common.css, 2026-07-06\\n  primary_accent: \\\"#FF3924\\\"        # --v2-color-accent (papaya red-coral)\\n  accent_hover: \\\"#E02E1C\\\"          # --v2-color-accent-hover\\n  accent_bright: \\\"#FF492C\\\"         # --v2-color-accent-bright\\n  bg_dark: \\\"#081523\\\"               # --v2-color-bg-dark (deep navy)\\n  text_primary: \\\"#1A1A1A\\\"\\n  tint_peach: [\\\"#FFF1EE\\\", \\\"#FFF8F6\\\", \\\"#FFE9E4\\\"]\\n  neutrals: [\\\"#F5F5F5\\\", \\\"#E8E8E8\\\", \\\"#FAFAFA\\\"]\\n  font_display: \\\"Greed (fallback: Plus Jakarta Sans, system-ui)\\\"    # --v2-font-display\\n  font_body: \\\"Suisse Intl (fallback: Inter, system-ui)\\\"             # --v2-font-body\\n  webfont_loaded: \\\"Plus Jakarta Sans 400/500/600/700 via Google Fonts\\\"\\n  logo: \\\"lowercase 'papaya global' wordmark; near-black on light, white on dark; coral reserved for accents/CTAs\\\"\\n  source: \\\"https://www.papayaglobal.com/wp-content/themes/papaya/build/v2/css/common.css\\\"\\n```\\n\";\n\n// --- assemble draft text from Notion blocks (defensive across raw + n8n-simplified shapes) ---\nconst meta = $('Guardrail - Entry Conditions').first().json;\nconst blocks = $input.all().map(i => i.json);\nfunction blockText(b){\n  const inner = (b && b[b.type]) || {};\n  const rt = inner.rich_text || inner.text || [];\n  if (Array.isArray(rt) && rt.length) return rt.map(x => (x.plain_text || (x.text && x.text.content) || '')).join('');\n  if (typeof b.content === 'string') return b.content;      // n8n simplified\n  if (typeof inner.content === 'string') return inner.content;\n  return '';\n}\nconst draft_text = blocks.map(blockText).filter(Boolean).join('\\n\\n').trim();\n\n// Guardrail: no context, no verdict.\nif (!CONTEXT_LAYER || CONTEXT_LAYER.length < 500) { throw new Error('GUARDRAIL: context layer missing/empty. No context, no verdict.'); }\n// Guardrail: empty draft short-circuits to needs_content (never a fake pass). IF node routes it around the agent.\nif (draft_text.length < 40) { return [{ json: { ...meta, draft_text, context: CONTEXT_LAYER, _needs_content: true } }]; }\n\n// Freshness: read the last_verified / compiled stamp out of the context layer meta.\nconst m = CONTEXT_LAYER.match(/last_verified[:=]\\s*(\\d{4}-\\d{2}-\\d{2})/i) || CONTEXT_LAYER.match(/compiled[:=]\\s*(\\d{4}-\\d{2}-\\d{2})/i);\nconst stampedDate = m ? m[1] : '2026-07-06';\nconst ageDays = Math.floor((Date.now() - new Date(stampedDate + 'T00:00:00Z').getTime()) / 86400000);\nreturn [{ json: { ...meta, draft_text, context: CONTEXT_LAYER, _needs_content: false,\n  context_meta_last_verified: stampedDate, context_stale: ageDays > 30, context_age_days: ageDays } }];"
+      },
+      "id": "9f56d0ab-1c52-4f97-bcc6-44ee81735c24",
+      "name": "Assemble Draft + Load Context Layer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Concatenates the Notion block text into draft_text, embeds the Papaya context layer (source of truth #1), and stamps context freshness. Empty context -> hard stop. Empty draft -> _needs_content. Block parser is defensive across raw Notion + n8n-simplified shapes."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "73156656-aa94-4ca6-94ea-4cbbbffd2161",
+              "leftValue": "={{ $json._needs_content }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8a08062a-54ae-48d8-8463-815b7027d3bd",
+      "name": "Empty draft? (needs content)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        720,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "TRUE (empty draft) -> straight to the decision node as 'Needs Content', never a model call on nothing. FALSE (real draft) -> the Compliance Governance Agent."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=DRAFT SUBMITTED FOR COMPLIANCE REVIEW\nTitle: {{ $json.page_title }}\n\n<draft>\n{{ $json.draft_text }}\n</draft>\n\n=== SOURCE #1: PAPAYA FACT CONTEXT LAYER (primary ground truth; if a fact is not here and the knowledge base does not back it, it is not admissible) ===\n{{ $json.context }}\n\nExtract every checkable claim from the draft above. Verify each against this fact context layer and - via your kb_agent tool - against Papaya's published posts and approved/banned canonical claims. Return exactly one verdict object per claim, in the required schema.",
+        "hasOutputParser": true,
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "=You are a skeptical compliance reviewer for Papaya Global, a payroll/EOR company with legal and compliance exposure across 160+ jurisdictions.\n\nYou do not write, rewrite, improve, soften, or approve copy.\nYou only audit draft text and classify every checkable factual claim by whether it is provable from approved evidence.\n\nCore Objective:\nFor every checkable claim in the draft, return one verdict object showing whether the claim is supported, contradicted, or unverifiable, and identify the compliance risk category when it is not safely supported.\n\nInputs You Will Receive:\n1. FACT CONTEXT LAYER\n   - The primary ground-truth source supplied in the user message.\n   - May include approved claims, banned claims, dated figures, supported jurisdictions, product facts, liability language, and source notes.\n\n2. DRAFT\n   - The copy to audit.\n\n3. kb_agent tool\n   - Use this only for Papaya knowledge-base checks.\n   - Query one specific claim or question at a time.\n   - The tool returns whether the KB supports, contradicts, or is silent, with a quoted source.\n\nAdmissible Evidence:\nOnly these sources are admissible:\n1. FACT CONTEXT LAYER\n2. kb_agent results\n\nDo not use general knowledge, memory, web knowledge, plausibility, inference, or assumptions as evidence.\n\nRequired Workflow:\n\nStep 1: Extract Claims\nExtract every checkable factual claim from the draft. Be over-inclusive.\n\nInclude:\n- numbers, dates, prices, percentages, timeframes\n- product capabilities and feature claims\n- company facts such as founders, funding, valuation, customers, certifications, partnerships, market presence, and legal structure\n- superlatives such as \"only\", \"first\", \"largest\", \"best\", \"most comprehensive\"\n- named customers, partners, regulators, platforms, countries, jurisdictions, laws, and third parties\n- compliance, tax, payroll, employment, EOR, immigration, contractor, benefits, or liability assertions\n- claims implied by wording if a reasonable reader would treat them as factual\n\nExclude:\n- pure opinion\n- generic industry statements that do not make a Papaya-specific or checkable assertion, such as \"payroll is complicated\"\n\nStep 2: Check The Context Layer\nFor each extracted claim:\n- Check whether the FACT CONTEXT LAYER explicitly supports it.\n- Check whether it appears on or conflicts with the banned_claims list.\n- Check whether it uses stale figures as current.\n- Check whether it makes unsupported jurisdiction, compliance, or liability assertions.\n\nStep 3: Use kb_agent\nCall kb_agent for any claim not fully settled by the FACT CONTEXT LAYER.\n\nAlways call kb_agent to check:\n- whether the claim contradicts Papaya’s prior published posts\n- whether the claim agrees with or contradicts Papaya’s approved canonical claims\n- whether the claim matches a banned canonical claim\n\nUse one specific claim or question per kb_agent call.\nDo not batch unrelated claims into one query.\n\nStep 4: Return Verdict Objects\nReturn exactly one verdict object per extracted claim.\n\nVerdict Rules:\n- A claim is \"supported\" only if an admissible source explicitly backs it.\n- If evidence is partial, indirect, implied, or merely plausible, mark the claim \"unverifiable\".\n- If the claim conflicts with an admissible source, mark it \"contradicted\".\n- If a claim is contradicted by both the context layer and KB, prefer the most specific contradiction in the evidence field.\n- Do not decide whether the draft should publish or be held. A downstream deterministic node makes that decision.\n\nAllowed verdict values:\n- \"supported\"\n- \"contradicted\"\n- \"unverifiable\"\n\nAllowed source values:\n- \"context_layer\"\n- \"prior_publication\"\n- \"approved_claim\"\n- \"none\"\n\nAllowed risk_category values:\n- \"none\" — use only when verdict is \"supported\"\n- \"hallucinated_fact\" — a stat, feature, company fact, or capability not present in any approved source\n- \"stale_figure\" — a figure marked as dated or historical is stated or implied as current\n- \"banned_claim\" — matches the context layer banned_claims list or a banned canonical claim\n- \"contradicts_prior_publication\" — disagrees with Papaya’s own published content\n- \"contradicts_approved_claim\" — disagrees with an approved canonical claim\n- \"jurisdiction_overreach\" — claims coverage, compliance, legal ownership, or operational capability in a jurisdiction not supported by the context layer or KB\n- \"liability_language\" — uses uncapped, unlimited, absolute, or otherwise unsupported liability phrasing\n\nSpecial Risk Rules:\n- Treat \"real-time settlement\" as banned unless the approved evidence explicitly supports that exact phrase. If the approved claim is \"about 90% settled in real time\", broader wording is a banned or contradicted claim.\n- Treat \"green\" branding or sustainability positioning as banned if listed in banned_claims or banned canonical claims.\n- Treat customer-count claims beyond the approved figure as banned or unverifiable.\n- Treat \"unlimited liability\", \"fully liable\", \"all liability\", or similar uncapped language as liability_language unless an approved source explicitly permits that exact phrasing.\n- Treat country, jurisdiction, compliance, or legal-coverage claims as jurisdiction_overreach unless explicitly supported.\n\nOutput Format:\nReturn valid JSON only. No markdown, no prose, no summary.\n\nUse this schema:\n\n{\n  \"claims\": [\n    {\n      \"claim_id\": \"C1\",\n      \"claim_text\": \"\",\n      \"verdict\": \"supported | contradicted | unverifiable\",\n      \"source\": \"context_layer | prior_publication | approved_claim | none\",\n      \"evidence\": \"\",\n      \"confidence\": 0.0,\n      \"risk_category\": \"none | hallucinated_fact | stale_figure | banned_claim | contradicts_prior_publication | contradicts_approved_claim | jurisdiction_overreach | liability_language\",\n      \"notes\": \"\"\n    }\n  ]\n}\n\nField Rules:\n- claim_id: Sequential IDs starting with C1.\n- claim_text: The exact claim or tightly paraphrased factual assertion from the draft.\n- verdict: Use only the allowed values.\n- source: Use the source that supports or breaks the claim. Use \"none\" only when no admissible evidence exists.\n- evidence: Verbatim quote from the context layer or kb_agent result. Use an empty string if no admissible evidence exists.\n- confidence: Number from 0 to 1 based only on admissible evidence strength.\n- risk_category: Use \"none\" only for supported claims.\n- notes: Briefly explain why the claim was classified this way. Do not suggest rewritten copy.\n\nBefore Returning:\n- Confirm every factual claim in the draft has one verdict object.\n- Confirm banned_claims were checked.\n- Confirm prior publications and approved canonical claims were checked through kb_agent where required.\n- Confirm no outside knowledge was used.\n- Confirm the output is valid JSON only."
+        }
+      },
+      "id": "e109e421-44ec-4e50-8937-6973e19720cb",
+      "name": "Compliance Governance Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1216,
+        384
+      ],
+      "notesInFlow": false,
+      "notes": "Native AI Agent (Sonnet - the judgment call). Extracts every claim AND verifies each in one ReAct loop, calling the kb_agent tool for KB evidence. The Structured Output Parser enforces the per-claim verdict schema. No json_object response-format and no fallback model: forcing json breaks tool-calling, and a wrong 'supported' verdict is the worst failure in the system - so the judgment model is Sonnet or it fails loud, never a cheaper stand-in."
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"ComplianceGateVerdicts\",\n  \"type\": \"object\",\n  \"required\": [\n    \"verdicts\"\n  ],\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"verdicts\": {\n      \"type\": \"array\",\n      \"description\": \"One object per checkable claim found in the draft.\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\n          \"id\",\n          \"claim\",\n          \"verdict\",\n          \"evidence\",\n          \"source\",\n          \"confidence\",\n          \"risk_category\"\n        ],\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"id\": {\n            \"type\": [\n              \"integer\",\n              \"string\"\n            ]\n          },\n          \"claim\": {\n            \"type\": \"string\",\n            \"description\": \"The claim, copied through unchanged.\"\n          },\n          \"verdict\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"supported\",\n              \"contradicted\",\n              \"unverifiable\"\n            ]\n          },\n          \"evidence\": {\n            \"type\": \"string\",\n            \"description\": \"Verbatim quote from the backing/breaking source, or empty string.\"\n          },\n          \"source\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"context_layer\",\n              \"prior_publication\",\n              \"approved_claim\",\n              \"none\"\n            ]\n          },\n          \"confidence\": {\n            \"type\": \"number\",\n            \"minimum\": 0,\n            \"maximum\": 1\n          },\n          \"risk_category\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"none\",\n              \"hallucinated_fact\",\n              \"stale_figure\",\n              \"banned_claim\",\n              \"contradicts_prior_publication\",\n              \"contradicts_approved_claim\",\n              \"jurisdiction_overreach\",\n              \"liability_language\"\n            ]\n          }\n        }\n      }\n    }\n  }\n}",
+        "autoFix": true
+      },
+      "id": "3b812447-158e-4a09-a7f2-ef6117a41f05",
+      "name": "Verdict Schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1584,
+        512
+      ],
+      "notesInFlow": false,
+      "notes": "Enforces the per-claim verdict schema (id, claim, verdict, evidence, source, confidence, risk_category). autoFix off: malformed output should fail loud rather than be silently 'repaired' and passed downstream (DESIGN failure-handling)."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Papaya knowledge-base researcher (sub-agent). Ask it about ONE claim/question at a time; it searches Papaya's fact layer, published posts, and approved/banned canonical claims and returns whether the KB supports, contradicts, or is silent, with a quoted source. Use it to verify any claim you cannot settle from the context layer, and always to check contradictions with published posts and the approved/banned claims list.",
+        "text": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('query', 'the specific claim or question to research against the Papaya knowledge base', 'string') }}",
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "=You are Papaya Global's knowledge-base researcher.\n\nA parent compliance-review agent sends you exactly one claim or question at a time. Your job is to search Papaya's knowledge base and return grounded evidence only.\n\nYou do not:\n- judge the whole draft\n- decide publish vs hold\n- rewrite copy\n- infer facts from general knowledge\n- add facts, prices, dates, URLs, or claims that the tools did not return\n\nYour only task:\nDetermine whether Papaya's KB SUPPORTS, CONTRADICTS, or is SILENT on the claim, and provide a verbatim quote with its source.\n\nAvailable tools:\n1. search_facts\n   Papaya's verified fact layer: company facts, products, pricing, proof points, certifications, jurisdictions, and banned_claims.\n\n2. search_published\n   Papaya's own published blog posts.\n   Use this to detect contradictions with prior Papaya content.\n\n3. search_claims\n   Papaya's approved canonical claims and banned claims.\n   Approved claim match = strong support.\n   Banned claim match or violation = contradiction.\n   If a banned claim includes correct_form, include it in Evidence.\n\nTool-use rules:\n- Use the user's claim wording as the main query.\n- For factual, pricing, product, coverage, compliance, jurisdiction, certification, customer, liability, or company claims, call all three tools:\n  search_facts\n  search_published\n  search_claims\n- For questions specifically about prior publications, call search_published and search_claims.\n- For questions specifically about approved or banned wording, call search_claims and search_facts.\n- If a tool returns no result, treat that tool as SILENT.\n- If a tool errors or is unavailable, treat that tool as SILENT and mention that in Notes.\n- Do not call tools with broad topic queries unless the exact claim query returns nothing. If broadening is needed, broaden once only.\n\nVerdict rules:\n- SUPPORTED: An admissible KB source explicitly backs the claim.\n- CONTRADICTED: An admissible KB source directly disagrees with the claim, or the claim matches/violates a banned claim.\n- SILENT: No admissible KB source explicitly supports or contradicts the claim.\n\nConflict rules:\n- CONTRADICTED beats SUPPORTED.\n- A banned claim beats an approved or factual partial match.\n- search_claims banned results are highest priority for banned wording.\n- search_facts is highest priority for verified current facts.\n- search_published is highest priority for contradictions with prior published Papaya content.\n- If evidence is partial, indirect, or merely related, return SILENT.\n\nReturn format:\nReturn only the following fields. No preamble. Keep the whole answer under 150 words.\n\nVerdict: SUPPORTED | CONTRADICTED | SILENT\nEvidence: \"[verbatim quote]\" \nSource: search_facts | search_published | search_claims — [title, slug, URL, or stance]\nConfidence: high | medium | low\nNotes: [one brief sentence explaining the basis, including tool silence/errors if relevant]\n\nEvidence rules:\n- Evidence must be a verbatim quote from a tool result.\n- If the verdict is SILENT, Evidence must be an empty string.\n- If the source is search_claims, include the claim stance when available: approved, banned, or correct_form.\n- Do not cite more than one source unless needed to explain a contradiction.\n- Do not include unsupported interpretation in Evidence."
+        }
+      },
+      "id": "e92e4012-39c9-4c22-9c45-b3cdede1d720",
+      "name": "kb_agent",
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        1376,
+        1008
+      ],
+      "notesInFlow": false,
+      "notes": "Sub-agent with its OWN context window (Haiku) so raw KB text never pollutes the main agent's reasoning - same rationale as the Incredibuild ask_kb pattern. Owns the three Pinecone RAG tools."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search Papaya's verified FACT LAYER (company facts, products, pricing, proof points, certifications, banned_claims). Returns the top matching fact chunks. Use to confirm or deny a factual claim.",
+        "method": "POST",
+        "url": "https://papaya-kb-a15xv56.svc.aped-4627-b74a.pinecone.io/records/namespaces/docs/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "pineconeApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"top_k\": 5,\n    \"inputs\": {\n      \"text\": \"{{ $fromAI('query', 'the claim or query text to search', 'string') }}\"\n    }\n  },\n  \"fields\": [\"chunk_text\", \"title\", \"section\", \"doc\"]\n}",
+        "options": {}
+      },
+      "id": "9facccbf-14a8-4df3-af1b-f35c3686194a",
+      "name": "search_facts",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1456,
+        1216
+      ],
+      "notesInFlow": false,
+      "notes": "Pinecone integrated-embedding search over namespace 'docs'. top_k is snake_case (topK fails with a deserialize error). Set a Pinecone (Api-Key header) credential at import."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search Papaya's OWN recently PUBLISHED blog posts. Returns the top matching chunks with title + url. Use to check whether a draft claim contradicts what Papaya already published.",
+        "method": "POST",
+        "url": "https://papaya-kb-a15xv56.svc.aped-4627-b74a.pinecone.io/records/namespaces/published/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "pineconeApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"top_k\": 5,\n    \"inputs\": {\n      \"text\": \"{{ $fromAI('query', 'the claim or query text to search', 'string') }}\"\n    }\n  },\n  \"fields\": [\"chunk_text\", \"title\", \"url\", \"slug\"]\n}",
+        "options": {}
+      },
+      "id": "d3982f9b-4971-4453-9580-376977c60cef",
+      "name": "search_published",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1584,
+        1216
+      ],
+      "notesInFlow": false,
+      "notes": "Pinecone integrated-embedding search over namespace 'published'. top_k is snake_case (topK fails with a deserialize error). Set a Pinecone (Api-Key header) credential at import."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search Papaya's APPROVED and BANNED canonical claims. Returns matching claims with their stance (approved|banned) and any correct_form. Use to check whether a draft claim matches an approved claim (support) or a banned claim (contradiction).",
+        "method": "POST",
+        "url": "https://papaya-kb-a15xv56.svc.aped-4627-b74a.pinecone.io/records/namespaces/claims/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "pineconeApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {\n    \"top_k\": 5,\n    \"inputs\": {\n      \"text\": \"{{ $fromAI('query', 'the claim or query text to search', 'string') }}\"\n    }\n  },\n  \"fields\": [\"chunk_text\", \"stance\", \"topic\", \"source\", \"correct_form\"]\n}",
+        "options": {}
+      },
+      "id": "8034d4cf-003a-455b-bfd3-19dd9a5976eb",
+      "name": "search_claims",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1760,
+        1232
+      ],
+      "notesInFlow": false,
+      "notes": "Pinecone integrated-embedding search over namespace 'claims'. top_k is snake_case (topK fails with a deserialize error). Set a Pinecone (Api-Key header) credential at import."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic. The LLM never decides publish vs hold.\nconst base = $('Assemble Draft + Load Context Layer').first().json;\nif (base._needs_content) {\n  return [{ json: { page_id: base.page_id, page_title: base.page_title, compliance_status: 'Needs Content',\n    audit_comment: 'This page has no draft body to review yet.', claims_checked: 0, unsupported: [], verdicts: [],\n    context_stale: !!base.context_stale, context_age_days: base.context_age_days } }];\n}\n// Agent output lands in $json.output (parsed by the Structured Output Parser). Defensive read.\nconst agentJson = $('Compliance Governance Agent').first().json;\nconst parsed = (agentJson && agentJson.output) || agentJson || {};\nconst verdicts = Array.isArray(parsed) ? parsed : (parsed.verdicts || []);\nconst unsupported = verdicts.filter(v => v && v.verdict !== 'supported');\nconst stale = !!base.context_stale;\n// Any non-supported claim OR stale context forces Needs Review.\nconst status = (unsupported.length > 0 || stale) ? 'Needs Review' : 'Ready';\n// Build a scannable Notion annotation (ASCII hyphens only - anti-AI-tell discipline).\nconst srcMap = { prior_publication: 'prior published post', context_layer: 'fact layer', approved_claim: 'approved-claims list', none: 'no source' };\nconst lines = [];\nlines.push(`Compliance gate: ${status}  (${verdicts.length} claims checked)`);\nif (stale) lines.push(`- WARNING context layer is ${base.context_age_days} days old (>30) - forced to review.`);\nfor (const v of unsupported) {\n  const ev = (v.evidence || '').slice(0, 240);\n  const src = srcMap[v.source] || v.source || 'no source';\n  lines.push(`- [${v.risk_category || 'unverified'}] ${v.verdict}: \"${v.claim}\"  |  ${src}: ${ev}`);\n}\nif (!unsupported.length && !stale) lines.push('- All claims trace to an approved source. Cleared for a human to publish.');\nconst audit_comment = lines.join('\\n');\nreturn [{ json: { page_id: base.page_id, page_title: base.page_title, compliance_status: status,\n  audit_comment, claims_checked: verdicts.length, unsupported, verdicts,\n  context_stale: stale, context_age_days: base.context_age_days } }];"
+      },
+      "id": "352c17bc-0b6b-46ce-9570-98583898c0a9",
+      "name": "Parent - Decide Ready / Needs Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Deterministic ship/hold rule: _needs_content -> Needs Content; any claim not 'supported' -> Needs Review; stale context -> Needs Review; else Ready. Emits the categorized Notion annotation (quoted evidence + risk_category per flag). This is the governance guarantee - the LLM never decides."
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Parent - Decide Ready / Needs Review').first().json.page_id }}"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Compliance Status|select",
+              "selectValue": "={{ $('Parent - Decide Ready / Needs Review').first().json.compliance_status }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "738667e3-f7ba-4cb2-a2f5-c79442b8c4b0",
+      "name": "Deliver - Update Compliance Status (Notion)",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        2464,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Writes the verdict to a 'Compliance Status' SELECT property on the page. Create that property (options: Ready / Needs Review / Needs Content) on the demo DB and confirm the name at import. Reads page_id + status by back-reference to the decision node (the Notion node replaces $json with its API response, so downstream nodes must not rely on passthrough)."
+    },
+    {
+      "parameters": {
+        "resource": "block",
+        "blockId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Parent - Decide Ready / Needs Review').first().json.page_id }}"
+        },
+        "blockUi": {
+          "blockValues": [
+            {
+              "textContent": "={{ $('Parent - Decide Ready / Needs Review').first().json.audit_comment }}"
+            }
+          ]
+        }
+      },
+      "id": "afc604b5-3194-4314-82e7-3aabdbdf7ca1",
+      "name": "Deliver - Append Audit Block (Notion)",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        2688,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Appends the categorized audit as a paragraph block in the page body - quoted evidence + risk_category per flag. The n8n Notion node has no comment resource; a true threaded comment is a one-node production swap (HTTP Request -> Notion POST /v1/comments). No auto-publish; the human decides."
+    },
+    {
+      "parameters": {
+        "jsCode": "const dec = $('Parent - Decide Ready / Needs Review').first().json;\n// Native agent: per-stage token/cost is coarser than the HTTP+Code build (accepted tradeoff).\n// Try to surface any usage the agent exposes; total run usage otherwise lives in n8n's execution metadata.\nlet token_usage = null;\ntry { const a = $('Compliance Governance Agent').first().json; token_usage = (a && (a.tokenUsage || (a.output && a.output.usage))) || null; } catch (e) {}\nconst verification_report = {\n  compliance_status: dec.compliance_status,\n  claims_checked: dec.claims_checked || 0,\n  unsupported: dec.unsupported || [],\n  verdicts: dec.verdicts || [],\n  context_stale: !!dec.context_stale,\n  context_age_days: dec.context_age_days,\n  token_usage,\n  observability_note: 'Native AI Agent: per-stage token/cost is coarser than the HTTP+Code backup. Total run usage is in the n8n execution metadata; a production tap would emit it to the telemetry store.',\n};\nreturn [{ json: { page_id: dec.page_id, page_title: dec.page_title, compliance_status: dec.compliance_status, audit_comment: dec.audit_comment, verification_report } }];"
+      },
+      "id": "cadccb4b-17f0-4b9e-9a2e-2a2be39dd559",
+      "name": "Observability - Compile Run Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        368
+      ],
+      "notesInFlow": false,
+      "notes": "Rolls up the verdict summary + any token usage the native agent exposes. Coarser than the HTTP+Code build's per-stage logs - the accepted cost of the native-agent structure (DESIGN observability)."
+    },
+    {
+      "parameters": {
+        "content": "## Papaya Compliance Governance Gate  (native-agent build)\n\n**Built by Noam Dorr - Papaya Global AI GTM Engineer home assignment, Part 3.**\n\nAgent-in-the-loop, not human-in-the-loop: a marketer writes, the agent audits. Fires when a Notion page moves to Draft, extracts every claim, verifies each against THREE sources of truth (the fact context layer + Papaya's own published posts + Papaya's approved/banned canonical claims, via a Pinecone RAG sub-agent), tags each flag with a compliance risk_category, and writes the verdict back to the page. It never publishes.\n\n**Structure:** a native AI Agent (gpt-5.5, gemini-3.1-pro-preview fallback) that extracts + verifies, with a kb_agent sub-agent (gpt-4.1-mini, gemini-3.5-flash fallback) owning three Pinecone RAG tools, wrapped by deterministic guardrails, a deterministic ship/hold decision, and Notion write-back. The LLM never decides publish vs hold.\n\n**Before running, set four credentials + the databaseId:**\n1. Notion (trigger + both Deliver nodes) and the trigger's databaseId.\n2. OpenRouter (5 model nodes: gpt-5.5 + gemini-3.1-pro-preview fallback on the main agent; gpt-4.1-mini + gemini-3.5-flash fallback on kb_agent; gpt-4.1-nano on the Verdict Schema auto-fixer).\n3. Pinecone Api-Key (on all three search_* RAG tools).\n4. On the demo DB, add a 'Compliance Status' select property with options Ready / Needs Review / Needs Content.\n\n**Demo:** move a page to Draft, click 'fetch test event' on the trigger, execute. The planted contradiction fixture (EOR price disagreeing with the live pricing post) flips the page to Needs Review with a categorized annotation.\n\nThe HTTP+Code build (papaya-governance-gate.n8n.json) is the dry-run-verified backup.",
+        "height": 1216,
+        "width": 480
+      },
+      "id": "8647e650-281a-4d2c-9b3d-4b0b83cf0c05",
+      "name": "READ ME - Papaya Compliance Governance Gate",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1024,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### PARENT / ORCHESTRATOR\nDeterministic: trigger, entry guardrail, no-op skip filter, context load + freshness, empty-draft routing. No LLM.",
+        "height": 130,
+        "width": 1300
+      },
+      "id": "6e6cc20e-9b05-4c1a-b6cd-81bc03c097f5",
+      "name": "Group - PARENT / ORCHESTRATOR",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### COMPLIANCE GOVERNANCE AGENT (reasoning model)\nExtracts every claim AND verifies each in one ReAct loop. Structured Output Parser enforces the per-claim verdict schema.",
+        "height": 1344,
+        "width": 1024
+      },
+      "id": "a6689f73-1671-493c-8034-1d63b796e521",
+      "name": "Group - COMPLIANCE GOVERNANCE AGENT (native, Sonnet)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1008,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### KB RESEARCHER SUB-AGENT + RAG (cheaper model)\nSeparate context window. Three Pinecone integrated-embedding tools: search_facts (docs) / search_published / search_claims.",
+        "height": 512,
+        "width": 928,
+        "color": 6
+      },
+      "id": "2e5da1a8-c945-4fe8-8467-e5718cd69428",
+      "name": "Group - KB RESEARCHER SUB-AGENT + RAG (Haiku)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1056,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### DECISION / DELIVERY / OBSERVABILITY\nDeterministic ship/hold decision -> Notion write-back (status + audit block) -> run report. The LLM never decides publish vs hold.",
+        "height": 514,
+        "width": 1040
+      },
+      "id": "bba658d4-bd79-4877-9299-91ebd895281e",
+      "name": "Group - DECISION / DELIVERY / OBSERVABILITY",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2112,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-5.5",
+        "options": {}
+      },
+      "id": "a0ecf741-f7a4-4db4-bdb3-4d2fa043e2e2",
+      "name": "gpt-5.5",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1072,
+        608
+      ],
+      "notesInFlow": false,
+      "notes": "OpenRouter -> anthropic/claude-sonnet-5. Model swap is one field. Set an OpenRouter credential at import."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "27dcf39c-36f7-40ce-89d0-4043101babbc",
+      "name": "gpt-4.1-mini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        1216
+      ],
+      "notesInFlow": false,
+      "notes": "OpenRouter -> anthropic/claude-haiku-4.5. The cheap model does the mechanical retrieval/synthesis. Swappable."
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4.1-nano",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        656
+      ],
+      "id": "d2e020d0-1c61-4038-907c-1232103d233a",
+      "name": "gpt-4.1-nano"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-3.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        1216
+      ],
+      "id": "d7fb5134-f490-43bf-bc6f-e66600721bba",
+      "name": "gemini-3.5-flash"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-3.1-pro-preview",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        608
+      ],
+      "id": "7d6fa831-09db-46d7-8cb1-ee57b30546dc",
+      "name": "gemini-3.1-pro-preview"
+    }
+  ],
+  "pinData": {
+    "Notion Trigger - Page Updated in Content DB": [
+      {
+        "json": {
+          "id": "1a2b3c4d-0001-4000-8000-000000000001",
+          "object": "page",
+          "properties": {
+            "Name": {
+              "type": "title",
+              "title": [
+                {
+                  "type": "text",
+                  "plain_text": "Draft under review"
+                }
+              ]
+            },
+            "Status": {
+              "type": "status",
+              "status": {
+                "name": "Draft"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "Get Draft Body (Notion)": [
+      {
+        "json": {
+          "type": "paragraph",
+          "paragraph": {
+            "rich_text": [
+              {
+                "plain_text": "Papaya Global provides Employer of Record services in 180 countries and runs native payroll in 120+ countries. EOR pricing starts at $499 per employee per month."
+              }
+            ]
+          }
+        }
+      },
+      {
+        "json": {
+          "type": "paragraph",
+          "paragraph": {
+            "rich_text": [
+              {
+                "plain_text": "About 90% of payments settle in real time, with a 99.5% delivery rate. Papaya Global was founded in 2016 by Eynat Guez, Ruben Drong, and Ofer Herman."
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Notion Trigger - Page Updated in Content DB": {
+      "main": [
+        [
+          {
+            "node": "Guardrail - Entry Conditions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardrail - Entry Conditions": {
+      "main": [
+        [
+          {
+            "node": "Only Draft / In Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only Draft / In Review": {
+      "main": [
+        [
+          {
+            "node": "Get Draft Body (Notion)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Draft Body (Notion)": {
+      "main": [
+        [
+          {
+            "node": "Assemble Draft + Load Context Layer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Draft + Load Context Layer": {
+      "main": [
+        [
+          {
+            "node": "Empty draft? (needs content)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verdict Schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Compliance Governance Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "kb_agent": {
+      "ai_tool": [
+        [
+          {
+            "node": "Compliance Governance Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_facts": {
+      "ai_tool": [
+        [
+          {
+            "node": "kb_agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_published": {
+      "ai_tool": [
+        [
+          {
+            "node": "kb_agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_claims": {
+      "ai_tool": [
+        [
+          {
+            "node": "kb_agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Empty draft? (needs content)": {
+      "main": [
+        [
+          {
+            "node": "Parent - Decide Ready / Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compliance Governance Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compliance Governance Agent": {
+      "main": [
+        [
+          {
+            "node": "Parent - Decide Ready / Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parent - Decide Ready / Needs Review": {
+      "main": [
+        [
+          {
+            "node": "Deliver - Update Compliance Status (Notion)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver - Update Compliance Status (Notion)": {
+      "main": [
+        [
+          {
+            "node": "Deliver - Append Audit Block (Notion)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver - Append Audit Block (Notion)": {
+      "main": [
+        [
+          {
+            "node": "Observability - Compile Run Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-5.5": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Compliance Governance Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-4.1-mini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "kb_agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-4.1-nano": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Verdict Schema",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gemini-3.5-flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "kb_agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "gemini-3.1-pro-preview": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Compliance Governance Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}
